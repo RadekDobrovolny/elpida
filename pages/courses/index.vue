@@ -86,14 +86,22 @@ async function deleteCourse(courseId: string) {
           <h1 class="text-3xl font-semibold text-project-teal">Knihovna kurzů</h1>
           <p class="text-sm text-slate-600">Vytvoř nový návrh kurzu nebo pokračuj v rozpracovaném.</p>
         </div>
-        <button
-          type="button"
-          class="mt-4 rounded-xl bg-project-teal px-5 py-3 text-sm font-semibold text-white transition hover:bg-project-teal/90 sm:mt-0"
-          :disabled="creating"
-          @click="createCourse"
-        >
-          {{ creating ? "Vytvářím..." : "Nový kurz" }}
-        </button>
+        <div class="mt-4 flex flex-wrap gap-2 sm:mt-0 sm:justify-end">
+          <NuxtLink
+            to="/settings"
+            class="rounded-xl border border-project-teal bg-project-white px-4 py-3 text-sm font-semibold text-slate-800 transition hover:bg-project-teal/15"
+          >
+            Nastavení kroků
+          </NuxtLink>
+          <button
+            type="button"
+            class="rounded-xl bg-project-teal px-5 py-3 text-sm font-semibold text-white transition hover:bg-project-teal/90"
+            :disabled="creating"
+            @click="createCourse"
+          >
+            {{ creating ? "Vytvářím..." : "Nový kurz" }}
+          </button>
+        </div>
       </div>
     </header>
 

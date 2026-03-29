@@ -1,4 +1,5 @@
 import { clampStep, normalizeQuiz, type CourseDto, type QuizQuestion } from "~/server/utils/course";
+import { stepLabel } from "~/server/utils/step-settings";
 
 interface ValerieContext {
   userMessage: string;
@@ -21,9 +22,25 @@ export interface ValeriePrefillResult {
   quiz?: QuizQuestion[];
 }
 
+export interface ValerieStepEvaluationResult {
+  source: "gemini" | "fallback";
+  reason?: string;
+  model: string;
+  score: number;
+  feedback: string;
+}
+
 interface ValeriePrefillContext {
   step: number;
   course: CourseDto;
+}
+
+interface ValerieStepEvaluationContext {
+  step: number;
+  course: CourseDto;
+  stepGoal: string;
+  completionCriteria: string;
+  stepFormContent: string;
 }
 
 function resolveGeminiConfig() {
@@ -182,6 +199,39 @@ ${transcript}
 `.trim();
 }
 
+function buildStepEvaluationPrompt(context: ValerieStepEvaluationContext): string {
+  const step = clampStep(context.step);
+  const configuredGoal = context.stepGoal.trim();
+  const configuredCriteria = context.completionCriteria.trim();
+  const fallbackGoal = stepPrompt(step);
+
+  return `
+Jsi Valérie. Hodnotíš kvalitu vyplnění jednoho kroku formuláře kurzu.
+
+Krok:
+- číslo: ${step}
+- název: ${stepLabel(step)}
+
+Cíl kroku (z nastavení):
+${configuredGoal || fallbackGoal}
+
+Kritéria splnění kroku (z nastavení):
+${configuredCriteria || "(není vyplněno, použij rozumná implicitní kritéria pro tento krok)"}
+
+Aktuální obsah formuláře:
+${context.stepFormContent || "(prázdné)"}
+
+Vrátíš POUZE JSON objekt:
+{"score":0-100,"feedback":"stručné praktické doporučení v češtině"}
+
+Pravidla:
+- score je celé číslo 0 až 100
+- pokud je score < 90, feedback musí jasně říct co chybí a jak to doplnit
+- pokud je score >= 90, feedback krátce potvrď a napiš 1 drobné doporučení navíc
+- bez markdownu, bez komentářů, bez dalšího textu
+`.trim();
+}
+
 function parseJsonFromModelOutput(rawText: string): unknown | null {
   const stripped = rawText
     .trim()
@@ -236,6 +286,76 @@ function fallbackPrefillForStep(context: ValeriePrefillContext): { text?: string
     return { quiz: normalizeQuiz(context.course.quiz) };
   }
   return { text: context.course.title.final || context.course.title.raw || "" };
+}
+
+function fallbackStepEvaluation(context: ValerieStepEvaluationContext): ValerieStepEvaluationResult {
+  const { model } = resolveGeminiConfig();
+  const step = clampStep(context.step);
+  const text = context.stepFormContent.trim();
+
+  if (!text) {
+    return {
+      source: "fallback",
+      reason: "empty_input",
+      model,
+      score: 0,
+      feedback: "Formulář je zatím prázdný. Doplň prosím konkrétní obsah podle cíle kroku."
+    };
+  }
+
+  if (step === 4) {
+    const completeRows = context.course.quiz.filter((row) => {
+      return row.question.trim() && row.options.every((option) => option.trim());
+    });
+    const score = completeRows.length >= 3 ? 94 : completeRows.length === 2 ? 75 : 55;
+
+    if (score >= 90) {
+      return {
+        source: "fallback",
+        reason: "gemini_unavailable",
+        model,
+        score,
+        feedback: "Kvíz vypadá dobře. Ještě si zkontroluj, že otázky jsou jednoznačné a odpovědi věcně správné."
+      };
+    }
+
+    return {
+      source: "fallback",
+      reason: "gemini_unavailable",
+      model,
+      score,
+      feedback: "Pro tento krok potřebujeme 3 kompletní otázky. Každá má mít 3 možnosti a jasně určenou správnou odpověď."
+    };
+  }
+
+  const textLength = text.length;
+  const score = textLength >= 120 ? 94 : textLength >= 70 ? 88 : textLength >= 40 ? 78 : 60;
+
+  if (score >= 90) {
+    return {
+      source: "fallback",
+      reason: "gemini_unavailable",
+      model,
+      score,
+      feedback: "Obsah je dostatečně konkrétní. Ještě zvaž, jestli ho můžeš jednou větou zpřesnit."
+    };
+  }
+
+  return {
+    source: "fallback",
+    reason: "gemini_unavailable",
+    model,
+    score,
+    feedback: "Obsah je dobrý základ, ale zatím není dost konkrétní. Doplň prosím přesnější a měřitelnější formulace."
+  };
+}
+
+function normalizeEvaluationScore(value: unknown): number {
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(numeric)));
 }
 
 async function askGemini(prompt: string): Promise<{ text: string | null; reason?: string }> {
@@ -385,5 +505,44 @@ export async function generateValeriePrefill(context: ValeriePrefillContext): Pr
     source: "fallback",
     reason: "invalid_output",
     model
+  };
+}
+
+export async function generateValerieStepEvaluation(
+  context: ValerieStepEvaluationContext
+): Promise<ValerieStepEvaluationResult> {
+  const { model } = resolveGeminiConfig();
+  const aiResult = await askGemini(buildStepEvaluationPrompt(context));
+  if (!aiResult.text) {
+    return {
+      ...fallbackStepEvaluation(context),
+      reason: aiResult.reason || "gemini_unavailable",
+      model
+    };
+  }
+
+  const parsed = parseJsonFromModelOutput(aiResult.text);
+  const score =
+    parsed && typeof parsed === "object"
+      ? normalizeEvaluationScore((parsed as { score?: unknown }).score)
+      : 0;
+  const feedback =
+    parsed && typeof parsed === "object" && typeof (parsed as { feedback?: unknown }).feedback === "string"
+      ? (parsed as { feedback: string }).feedback.trim()
+      : aiResult.text.trim();
+
+  if (!feedback) {
+    return {
+      ...fallbackStepEvaluation(context),
+      reason: "invalid_output",
+      model
+    };
+  }
+
+  return {
+    source: "gemini",
+    model,
+    score,
+    feedback
   };
 }

@@ -11,6 +11,7 @@ interface ChatBody {
   message?: string;
   course_id?: string;
   step?: number;
+  sender?: "user" | "system" | string;
 }
 
 export default defineEventHandler(async (event) => {
@@ -19,6 +20,7 @@ export default defineEventHandler(async (event) => {
 
   const message = body.message?.trim();
   const courseId = body.course_id;
+  const sender = body.sender === "system" ? "system" : body.sender === "user" || !body.sender ? "user" : null;
 
   if (!message) {
     throw createError({ statusCode: 400, statusMessage: "Missing message." });
@@ -26,6 +28,10 @@ export default defineEventHandler(async (event) => {
 
   if (!courseId) {
     throw createError({ statusCode: 400, statusMessage: "Missing course_id." });
+  }
+
+  if (!sender) {
+    throw createError({ statusCode: 400, statusMessage: "Invalid sender." });
   }
 
   const course = await prisma.course.findFirst({
@@ -50,7 +56,7 @@ export default defineEventHandler(async (event) => {
   await prisma.chatMessage.create({
     data: {
       courseId,
-      role: "user",
+      role: sender,
       content: message
     }
   });

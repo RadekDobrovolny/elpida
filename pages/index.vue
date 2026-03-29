@@ -32,6 +32,12 @@ async function createCourse() {
         >
           Otevřít knihovnu
         </NuxtLink>
+        <NuxtLink
+          to="/settings"
+          class="rounded-xl border border-project-teal bg-project-white px-5 py-3 text-sm font-semibold text-slate-800 transition hover:bg-project-teal/15"
+        >
+          Nastavení kroků
+        </NuxtLink>
       </div>
     </div>
   </main>

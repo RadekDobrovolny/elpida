@@ -28,6 +28,19 @@ model Course {
   @@index([createdAt])
 }
 
+model StepSetting {
+  id              String   @id @default(cuid())
+  anonymousUserId String
+  step            Int
+  goalText        String   @default("")
+  criteriaText    String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([anonymousUserId, step])
+  @@index([anonymousUserId])
+}
+
 model ChatMessage {
   id        String   @id @default(cuid())
   courseId  String

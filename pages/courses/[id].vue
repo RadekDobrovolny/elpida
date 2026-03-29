@@ -43,6 +43,31 @@ interface PrefillApiResponse {
   };
 }
 
+interface EvaluateStepApiResponse {
+  passed: boolean;
+  threshold: number;
+  score: number;
+  feedback: string;
+  course?: CourseDto | null;
+  ai?: {
+    source?: "gemini" | "fallback" | string;
+    reason?: string | null;
+    model?: string | null;
+  };
+}
+
+interface SettingsApiResponse {
+  steps: Array<{
+    step: number;
+    goal: string;
+    criteria: string;
+  }>;
+}
+
+interface ProgressNoteApiResponse {
+  course: CourseDto;
+}
+
 const steps = [
   { id: 1, label: "Oblast kurzu" },
   { id: 2, label: "Cíl kurzu" },
@@ -183,6 +208,18 @@ function quizPayload(): QuizQuestion[] {
     .filter((item) => item.question && item.options.every((opt) => opt));
 }
 
+function evaluationQuizPayload(): QuizQuestion[] {
+  return form.quiz.map((item) => ({
+    question: item.question.trim(),
+    options: [
+      item.options[0].trim(),
+      item.options[1].trim(),
+      item.options[2].trim()
+    ] as [string, string, string],
+    correctIndex: item.correctIndex
+  }));
+}
+
 async function saveCourse(options?: { successMessage?: string }): Promise<boolean> {
   if (!course.value) {
     return false;
@@ -234,6 +271,7 @@ async function saveAndReturnToLibrary() {
 interface SendChatOptions {
   restoreInputOnError?: boolean;
   errorMessage?: string;
+  sender?: "user" | "system";
 }
 
 async function sendChatMessage(messageOverride?: string, options?: SendChatOptions): Promise<boolean> {
@@ -259,7 +297,8 @@ async function sendChatMessage(messageOverride?: string, options?: SendChatOptio
       body: {
         message,
         course_id: course.value.id,
-        step: form.currentStep
+        step: form.currentStep,
+        sender: options?.sender ?? "user"
       }
     });
     course.value = response.course;
@@ -287,9 +326,22 @@ async function sendChatMessage(messageOverride?: string, options?: SendChatOptio
   }
 }
 
-function buildStepIntroPrompt(step: number): string {
+async function fetchStepGoal(step: number): Promise<string> {
+  try {
+    const response = await $fetch<SettingsApiResponse>("/api/settings");
+    const matched = response.steps.find((item) => item.step === step);
+    return matched?.goal?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+function buildStepGoalSystemMessage(step: number, goal: string): string {
   const stepLabel = steps.find((item) => item.id === step)?.label ?? "Aktuální krok";
-  return `Jsme na kroku ${step} (${stepLabel}). Stručně popiš cíl tohoto kroku a dej uživateli základní směr, jak by ho měl vyplnit.`;
+  if (goal) {
+    return `Cíl kroku ${step} (${stepLabel}) je: ${goal}. Valérie, navrhni uživateli stručný směr, jak tento krok kvalitně vyplnit.`;
+  }
+  return `Pro krok ${step} (${stepLabel}) zatím není v nastavení vyplněný cíl. Valérie, navrhni uživateli základní směr, jak tento krok vyplnit.`;
 }
 
 async function sendAutomaticStepIntro(step: number) {
@@ -303,7 +355,9 @@ async function sendAutomaticStepIntro(step: number) {
   }
 
   autoStepIntroSent.value.add(key);
-  const sent = await sendChatMessage(buildStepIntroPrompt(step), {
+  const stepGoal = await fetchStepGoal(step);
+  const sent = await sendChatMessage(buildStepGoalSystemMessage(step, stepGoal), {
+    sender: "system",
     restoreInputOnError: false,
     errorMessage: "Nepodařilo se načíst úvodní doporučení pro tento krok."
   });
@@ -425,23 +479,76 @@ async function fillFormFromChat() {
 }
 
 async function continueToNextStep() {
-  if (!canContinue.value || progressing.value) {
+  if (!course.value || !canContinue.value || progressing.value) {
     return;
   }
 
-  const previousStep = form.currentStep;
-  form.currentStep = Math.min(steps.length, form.currentStep + 1);
   progressing.value = true;
+  statusMessage.value = "";
 
-  const saved = await saveCourse({
-    successMessage: `Pokračuji na krok ${form.currentStep}.`
-  });
+  try {
+    const evaluation = await $fetch<EvaluateStepApiResponse>("/api/course/evaluate-step", {
+      method: "POST",
+      body: {
+        course_id: course.value.id,
+        step: form.currentStep,
+        draft: {
+          domain: form.domain,
+          goal: form.goal,
+          experience: form.experience,
+          title: form.title,
+          quiz: evaluationQuizPayload()
+        }
+      }
+    });
 
-  if (!saved) {
-    form.currentStep = previousStep;
+    if (evaluation.course) {
+      course.value = {
+        ...evaluation.course,
+        domain: { raw: form.domain, final: form.domain },
+        goal: { raw: form.goal, final: form.goal },
+        experience: { raw: form.experience, final: form.experience },
+        quiz: evaluationQuizPayload(),
+        title: { raw: form.title, final: form.title },
+        currentStep: form.currentStep
+      };
+    }
+
+    if (!evaluation.passed) {
+      statusMessage.value = `Krok zatím není splněný (${evaluation.score} % / ${evaluation.threshold} %).`;
+      return;
+    }
+
+    const previousStep = form.currentStep;
+    form.currentStep = Math.min(steps.length, form.currentStep + 1);
+
+    const saved = await saveCourse({
+      successMessage: `Krok splněn (${evaluation.score} %). Pokračuji na krok ${form.currentStep}.`
+    });
+
+    if (!saved) {
+      form.currentStep = previousStep;
+      return;
+    }
+
+    try {
+      const progressNote = await $fetch<ProgressNoteApiResponse>("/api/course/progress-note", {
+        method: "POST",
+        body: {
+          course_id: course.value.id,
+          message: `Skvělé, krok ${previousStep} je splněný. Teď pokračujeme na krok ${form.currentStep}.`
+        }
+      });
+      course.value = progressNote.course;
+      syncForm(progressNote.course);
+    } catch {
+      // Continue silently, progress itself already succeeded.
+    }
+  } catch {
+    statusMessage.value = "Vyhodnocení kroku se nepovedlo.";
+  } finally {
+    progressing.value = false;
   }
-
-  progressing.value = false;
 }
 
 function setStep(step: number) {
@@ -465,7 +572,10 @@ function panelClasses(stepId: number): string {
 <template>
   <main class="mx-auto min-h-screen max-w-7xl bg-project-white p-4 md:p-8">
     <header class="mb-6 rounded-3xl border border-project-blue/60 bg-project-white p-5 shadow-sm">
-      <NuxtLink to="/courses" class="text-sm font-medium text-project-teal hover:text-project-blue">← Knihovna kurzů</NuxtLink>
+      <div class="flex items-center justify-between gap-3">
+        <NuxtLink to="/courses" class="text-sm font-medium text-project-teal hover:text-project-blue">← Knihovna kurzů</NuxtLink>
+        <NuxtLink to="/settings" class="text-sm font-medium text-project-teal hover:text-project-blue">Nastavení kroků</NuxtLink>
+      </div>
       <h1 class="mt-2 text-2xl font-semibold text-project-teal">{{ courseLabel }}</h1>
       <p class="mt-1 text-sm text-slate-600">Aktuální krok: {{ currentStepLabel }}</p>
     </header>
@@ -574,13 +684,39 @@ function panelClasses(stepId: number): string {
         <p class="mt-1 text-sm text-slate-600">Valérie odpovídá stručně a drží se aktuálního kroku.</p>
 
         <div ref="chatMessagesEl" class="mt-4 flex-1 space-y-3 overflow-y-auto rounded-2xl bg-project-blue/10 p-3">
-          <div v-for="message in visibleMessages" :key="message.id" class="flex" :class="message.role === 'assistant' ? 'justify-start' : 'justify-end'">
+          <div v-for="message in visibleMessages" :key="message.id" class="flex" :class="message.role === 'user' ? 'justify-end' : 'justify-start'">
             <div
               class="max-w-[92%] rounded-2xl px-3 py-2 text-sm shadow-sm"
-              :class="message.role === 'assistant' ? 'border border-project-blue/40 bg-project-white text-slate-800' : 'bg-project-teal text-white'"
+              :class="
+                message.role === 'assistant'
+                  ? 'border border-project-blue/40 bg-project-white text-slate-800'
+                  : message.role === 'system_success'
+                    ? 'border border-[#5BBF85] bg-[#EAF9F1] text-slate-800'
+                  : message.role === 'system'
+                    ? 'border border-[#E6C15A] bg-[#FFF7D6] text-slate-800'
+                    : 'bg-project-teal text-white'
+              "
             >
+              <p
+                v-if="message.role === 'system' || message.role === 'system_success'"
+                class="mb-1 text-[10px] font-semibold uppercase tracking-wide"
+                :class="message.role === 'system_success' ? 'text-[#2F8A5D]' : 'text-[#9A7400]'"
+              >
+                Aplikace
+              </p>
               <p class="whitespace-pre-wrap">{{ message.content }}</p>
-              <p class="mt-1 text-[10px]" :class="message.role === 'assistant' ? 'text-slate-400' : 'text-white/80'">
+              <p
+                class="mt-1 text-[10px]"
+                :class="
+                  message.role === 'assistant'
+                    ? 'text-slate-400'
+                    : message.role === 'system_success'
+                      ? 'text-[#2F8A5D]'
+                    : message.role === 'system'
+                      ? 'text-[#9A7400]'
+                      : 'text-white/80'
+                "
+              >
                 {{ new Date(message.createdAt).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" }) }}
               </p>
             </div>
