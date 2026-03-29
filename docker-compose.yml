@@ -1,0 +1,30 @@
+services:
+  web:
+    build: .
+    environment:
+      DATABASE_URL: file:/data/dev.db
+      NUXT_GEMINI_API_KEY: ${NUXT_GEMINI_API_KEY:-}
+      NUXT_GEMINI_MODEL: ${NUXT_GEMINI_MODEL:-gemini-3.1-flash-lite-preview}
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: 3000
+    volumes:
+      - sqlite_data:/data
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2.8
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  sqlite_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,29 @@
+{
+  "name": "valerie-course-guide",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "npm run db:push && nuxt dev --port 3001",
+    "start": "npm run db:push && nuxt start --port 3001",
+    "prepare": "nuxt prepare",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "db:push": "DATABASE_URL=${DATABASE_URL:-file:./dev.db} prisma db push"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "nuxt": "^4.1.0"
+  },
+  "devDependencies": {
+    "@nuxtjs/tailwindcss": "^6.14.0",
+    "prisma": "^5.22.0",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.8.0",
+    "vue-tsc": "^2.2.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

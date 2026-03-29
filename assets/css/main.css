@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #__nuxt {
+    @apply min-h-screen bg-project-white text-slate-900;
+  }
+
+  body {
+    @apply antialiased;
+  }
+}
