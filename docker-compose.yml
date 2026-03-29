@@ -16,11 +16,10 @@ services:
     image: caddy:2.8
     depends_on:
       - web
+    command: ["caddy", "reverse-proxy", "--from", ":80", "--to", "web:3000"]
     ports:
-      - "80:80"
-      - "443:443"
+      - "3005:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
 
